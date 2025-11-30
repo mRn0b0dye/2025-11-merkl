@@ -388,9 +388,6 @@ contract DistributionCreator is UUPSHelper, ReentrancyGuardUpgradeable {
         return _getValidRewardTokens(skip, first);
     }
 
-    /// @notice Returns all timestamps when a campaign was overridden
-    /// @param _campaignId ID of the campaign
-    /// @return Array of block timestamps when overrides occurred
     function getCampaignOverridesTimestamp(bytes32 _campaignId) external view returns (uint256[] memory) {
         return campaignOverridesTimestamp[_campaignId];
     }
@@ -401,13 +398,6 @@ contract DistributionCreator is UUPSHelper, ReentrancyGuardUpgradeable {
     function getCampaignListReallocation(bytes32 _campaignId) external view returns (address[] memory) {
         return campaignListReallocation[_campaignId];
     }
-
-    /*//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                                                 GOVERNANCE FUNCTIONS                                               
-    //////////////////////////////////////////////////////////////////////////////////////////////////////////////////*/
-
-    /// @notice Updates the Distributor contract address that receives and distributes rewards
-    /// @param _distributor New Distributor contract address
     /// @dev Only callable by governor
     function setNewDistributor(address _distributor) external onlyGovernor {
         if (_distributor == address(0)) revert Errors.InvalidParam();
@@ -480,23 +470,11 @@ contract DistributionCreator is UUPSHelper, ReentrancyGuardUpgradeable {
         feeRebate[user] = userFeeRebate;
         emit FeeRebateUpdated(user, userFeeRebate);
     }
-
-    /// @notice Toggles whether a user must sign the terms message before creating campaigns
-    /// @param user User address whose whitelist status is being toggled
-    /// @dev Only callable by governor or guardian
-    /// @dev Whitelisted users (status = 1) can create campaigns without accepting Merkl terms
     function toggleSigningWhitelist(address user) external onlyGovernorOrGuardian {
         uint256 whitelistStatus = 1 - userSignatureWhitelist[user];
         userSignatureWhitelist[user] = whitelistStatus;
         emit UserSigningWhitelistToggled(user, whitelistStatus);
     }
-
-    /// @notice Configures minimum reward amounts per epoch for whitelisted tokens
-    /// @param tokens Array of reward token addresses
-    /// @param amounts Array of minimum amounts (0 = remove from whitelist, >0 = add/update)
-    /// @dev Only callable by governor or guardian
-    /// @dev Setting amount to 0 effectively removes the token from the whitelist
-    /// @dev Prevents duplicate entries when adding previously removed tokens
     function setRewardTokenMinAmounts(address[] calldata tokens, uint256[] calldata amounts) external onlyGovernorOrGuardian {
         uint256 tokensLength = tokens.length;
         if (tokensLength != amounts.length) revert Errors.InvalidLengths();
@@ -513,23 +491,10 @@ contract DistributionCreator is UUPSHelper, ReentrancyGuardUpgradeable {
         }
     }
 
-    /*//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                                                       INTERNAL                                                     
-    //////////////////////////////////////////////////////////////////////////////////////////////////////////////////*/
-
-    /// @notice Internal function to create a new campaign with validation and fee processing
-    /// @param newCampaign Campaign parameters to create
-    /// @return Unique campaign ID of the created campaign
-    /// @dev Validates campaign duration, reward token whitelist status, and minimum reward amounts
-    /// @dev Computes and deducts protocol fees from the campaign amount
-    /// @dev Reverts if campaign already exists or validation fails
     function _createCampaign(CampaignParameters memory newCampaign) internal returns (bytes32) {
         uint256 rewardTokenMinAmount = rewardTokenMinAmounts[newCampaign.rewardToken];
-        // if the campaign doesn't last at least one hour
         if (newCampaign.duration < HOUR) revert Errors.CampaignDurationBelowHour();
-        // if the reward token is not whitelisted as an incentive token
         if (rewardTokenMinAmount == 0) revert Errors.CampaignRewardTokenNotWhitelisted();
-        // if the amount distributed is too small with respect to what is allowed
         if ((newCampaign.amount * HOUR) / newCampaign.duration < rewardTokenMinAmount) revert Errors.CampaignRewardTooLow();
         // Computing fees and pulling tokens
         uint256 campaignAmountMinusFees = _computeFees(newCampaign.campaignType, newCampaign.amount);
@@ -546,42 +511,21 @@ contract DistributionCreator is UUPSHelper, ReentrancyGuardUpgradeable {
         return newCampaign.campaignId;
     }
 
-    /// @notice Validates that the caller is authorized to manage campaigns for the specified manager
-    /// @param manager Address of the campaign manager
-    /// @dev Reverts if msg.sender is not the manager and not an authorized operator
     function _isValidOperator(address manager) internal view {
         if (manager != msg.sender && campaignOperators[manager][msg.sender] == 0) {
             revert Errors.OperatorNotAllowed();
         }
     }
 
-    /// @notice Updates an operator's allowance to spend a user's predeposited tokens
-    /// @param user User granting the allowance
-    /// @param operator Operator receiving the allowance
-    /// @param rewardToken Token for which allowance is being set
-    /// @param newAllowance New allowance amount
     function _updateAllowance(address user, address operator, address rewardToken, uint256 newAllowance) internal {
         creatorAllowance[user][operator][rewardToken] = newAllowance;
         emit CreatorAllowanceUpdated(user, operator, rewardToken, newAllowance);
     }
 
-    /// @notice Updates a user's predeposited token balance
-    /// @param user User whose balance is being updated
-    /// @param rewardToken Token whose balance is being updated
-    /// @param newBalance New balance amount
     function _updateBalance(address user, address rewardToken, uint256 newBalance) internal {
         creatorBalance[user][rewardToken] = newBalance;
         emit CreatorBalanceUpdated(user, rewardToken, newBalance);
     }
-
-    /// @notice Transfers reward tokens from creator's balance or msg.sender to the distributor
-    /// @param creator Address of the campaign creator
-    /// @param rewardToken Token being transferred
-    /// @param campaignAmount Total amount including fees
-    /// @param campaignAmountMinusFees Net amount after fees to send to distributor
-    /// @dev Attempts to use predeposited balance first, checking operator allowance if applicable
-    /// @dev Falls back to direct transfer from msg.sender if insufficient predeposited balance
-    /// @dev Sends fees to feeRecipient (or this contract if feeRecipient is zero address)
     function _pullTokens(address creator, address rewardToken, uint256 campaignAmount, uint256 campaignAmountMinusFees) internal {
         uint256 fees = campaignAmount - campaignAmountMinusFees;
         address _feeRecipient;
@@ -609,14 +553,6 @@ contract DistributionCreator is UUPSHelper, ReentrancyGuardUpgradeable {
             IERC20(rewardToken).safeTransferFrom(msg.sender, distributor, campaignAmountMinusFees);
         }
     }
-
-    /// @notice Calculates the net campaign amount after deducting applicable fees
-    /// @param campaignType Type of campaign for fee calculation
-    /// @param distributionAmount Gross distribution amount before fees
-    /// @return distributionAmountMinusFees Net amount after fees are deducted
-    /// @dev Uses campaign-specific fees if set, otherwise uses default fees
-    /// @dev Campaign-specific fee of 1 is treated as 0 (fee waiver)
-    /// @dev Applies fee rebates to msg.sender (not creator)
     function _computeFees(uint32 campaignType, uint256 distributionAmount) internal view returns (uint256 distributionAmountMinusFees) {
         uint256 baseFeesValue = campaignSpecificFees[campaignType];
         if (baseFeesValue == 1) baseFeesValue = 0;
@@ -629,12 +565,6 @@ contract DistributionCreator is UUPSHelper, ReentrancyGuardUpgradeable {
         }
     }
 
-    /// @notice Builds a paginated list of whitelisted reward tokens with their minimum amounts
-    /// @param skip Number of tokens to skip in the iteration
-    /// @param first Maximum number of tokens to return
-    /// @return Array of valid reward tokens and the index where iteration stopped
-    /// @dev Only includes tokens with non-zero minimum amounts (active whitelist entries)
-    /// @dev Uses assembly to resize the return array to actual length
     function _getValidRewardTokens(uint32 skip, uint32 first) internal view returns (RewardTokenAmounts[] memory, uint256) {
         uint256 length;
         uint256 rewardTokenListLength = rewardTokens.length;
@@ -659,10 +589,5 @@ contract DistributionCreator is UUPSHelper, ReentrancyGuardUpgradeable {
         return (validRewardTokens, i);
     }
 
-    /**
-     * @dev This empty reserved space is put in place to allow future versions to add new
-     * variables without shifting down storage in the inheritance chain.
-     * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
-     */
     uint256[28] private __gap;
 }
